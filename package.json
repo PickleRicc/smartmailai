@@ -9,9 +9,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@langchain/core": "^0.3.33",
     "@supabase/supabase-js": "^2.48.0",
     "chart.js": "^4.4.7",
     "googleapis": "^144.0.0",
+    "langchain": "^0.3.12",
     "next": "15.1.6",
     "next-auth": "^4.24.11",
     "openai": "^4.79.4",

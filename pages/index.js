@@ -17,22 +17,36 @@ export default function Home() {
   const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);  // Start with false since no emails fetched yet
+  const [hasFetchedInitial, setHasFetchedInitial] = useState(false);  // Track if initial fetch happened
 
-  const fetchEmails = async () => {
+  const fetchEmails = async (pageNum = 1) => {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch('/api/emails/fetch');
+      const response = await fetch(`/api/emails/fetch?page=${pageNum}`);
       if (!response.ok) {
         throw new Error('Failed to fetch emails');
       }
       const data = await response.json();
-      setEmails(data.messages);
+      
+      // If it's the first page, replace emails. Otherwise, append them
+      setEmails(prevEmails => pageNum === 1 ? data.messages : [...prevEmails, ...data.messages]);
+      setHasMore(data.pagination.hasMore);
+      setPage(pageNum);
+      setHasFetchedInitial(true);  // Mark that we've done the initial fetch
     } catch (err) {
       setError(err.message);
       console.error('Error fetching emails:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMore = () => {
+    if (!loading && hasMore) {
+      fetchEmails(page + 1);
     }
   };
 
@@ -67,24 +81,24 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen p-8">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-gray-100">
+      <main className="container mx-auto px-4 py-8">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <h1 className="text-2xl font-bold">Welcome, {session.user.name}</h1>
-            <p className="text-gray-600">{session.user.email}</p>
+            <h1 className="text-3xl font-bold">Your Smart Inbox</h1>
+            <p className="text-gray-600 mt-1">{session.user.email}</p>
           </div>
-          <div className="flex gap-4">
+          <div className="space-x-4">
             <button
-              onClick={fetchEmails}
+              onClick={() => fetchEmails(1)}
               disabled={loading}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              className="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 disabled:opacity-50"
             >
-              {loading ? 'Fetching...' : 'Fetch Emails'}
+              {loading ? 'Loading...' : 'Fetch Emails'}
             </button>
             <button
               onClick={() => signOut()}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              className="bg-gray-500 text-white px-6 py-2 rounded hover:bg-gray-600"
             >
               Sign Out
             </button>
@@ -92,49 +106,54 @@ export default function Home() {
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-            <p className="text-red-600">{error}</p>
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+            {error}
           </div>
         )}
 
-        {emails.length > 0 && (
-          <div className="bg-white rounded-lg shadow overflow-hidden">
-            <div className="p-4 border-b">
-              <h2 className="text-lg font-semibold">Recent Emails</h2>
-            </div>
-            <div className="divide-y">
+        {emails.length > 0 ? (
+          <div>
+            <div className="space-y-4">
               {emails.map((email) => (
-                <div key={email.id} className="p-4 hover:bg-gray-50">
-                  {session.provider === 'google' ? (
-                    // Gmail format
-                    <div>
-                      {email.payload?.headers?.map((header) => {
-                        if (header.name === 'Subject') {
-                          return <p key="subject" className="font-medium">{header.value}</p>;
-                        }
-                        if (header.name === 'From') {
-                          return <p key="from" className="text-sm text-gray-600">{header.value}</p>;
-                        }
-                        return null;
-                      })}
-                      <p className="text-sm mt-2">
-                        {email.snippet}
-                      </p>
-                    </div>
-                  ) : (
-                    // Outlook format
-                    <div>
-                      <p className="font-medium">{email.subject}</p>
-                      <p className="text-sm text-gray-600">{email.from?.emailAddress?.name}</p>
-                      <p className="text-sm mt-2">{email.bodyPreview}</p>
-                    </div>
+                <div key={email.email_id} className="bg-white p-4 rounded shadow">
+                  <h3 className="font-semibold">{email.subject}</h3>
+                  <p className="text-gray-600">{email.sender}</p>
+                  <p className="text-sm text-gray-500 mt-2">{email.snippet}</p>
+                  {email.category && (
+                    <span className="inline-block bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded mt-2">
+                      {email.category}
+                    </span>
                   )}
                 </div>
               ))}
             </div>
+            
+            {/* Debug info */}
+            <div className="mt-4 text-sm text-gray-500">
+              <p>Has More: {hasMore ? 'true' : 'false'}</p>
+              <p>Current Page: {page}</p>
+              <p>Email Count: {emails.length}</p>
+            </div>
+
+            {/* Show Load More if hasMore is true */}
+            {hasMore && (
+              <div className="mt-6 text-center">
+                <button
+                  onClick={loadMore}
+                  disabled={loading}
+                  className="bg-gray-500 text-white px-6 py-2 rounded hover:bg-gray-600 disabled:opacity-50"
+                >
+                  {loading ? 'Loading...' : 'Load More'}
+                </button>
+              </div>
+            )}
           </div>
+        ) : hasFetchedInitial ? (
+          <div className="text-center text-gray-600">No emails found</div>
+        ) : (
+          <div className="text-center text-gray-600">Click 'Fetch Emails' to load your messages</div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
