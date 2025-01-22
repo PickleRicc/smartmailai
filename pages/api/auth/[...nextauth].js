@@ -56,6 +56,9 @@ export const authOptions = {
       session.accessToken = token.accessToken;
       session.provider = token.provider;
       
+      // Use email as user ID (temporary solution)
+      session.user.id = session.user.email;
+      
       // Don't expose sensitive data to the client
       delete token.refreshToken;
       
