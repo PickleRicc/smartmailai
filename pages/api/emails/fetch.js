@@ -26,6 +26,14 @@ export default async function handler(req, res) {
     const accessToken = session.accessToken;
     const email = session.user.email;
 
+    // Check for token refresh errors
+    if (session.error === 'RefreshAccessTokenError') {
+      return res.status(401).json({ 
+        error: 'Your session has expired. Please sign in again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
+
     console.log('Session debug:', {
       provider,
       hasAccessToken: !!accessToken,
@@ -65,71 +73,74 @@ export default async function handler(req, res) {
      * - Pagination works naturally through range checks
      */
 
-    // Check if we already have emails in Supabase for this user
-    const { data: existingEmails, error: existingError } = await supabase
-      .from("emails")
-      .select("email_id")
-      .eq("user_id", user.id)
-      .range(start, start + pageSize - 1)
-      .order('created_at', { ascending: false });
+    // Map folder IDs to categories
+    const folderToCategory = {
+      'all': 'all',
+      'work': 'Work',
+      'personal': 'Personal',
+      'promotional': 'Promotion',
+      'newsletters': 'Newsletter',
+      'updates': 'Update'
+    };
 
-    console.log('Database check:', {
+    // First try to get emails from database
+    let query = supabase
+      .from("emails")
+      .select("*")
+      .eq("user_id", user.id)
+      .order('received_at', { ascending: false })
+      .range(start, start + pageSize - 1);
+
+    // Add folder filter if not 'all'
+    const folder = req.query.folder || 'all';
+    if (folder !== 'all') {
+      const category = folderToCategory[folder];
+      query = query.eq('category', category);
+    }
+
+    console.log('Querying database with:', {
+      folder,
+      category: folderToCategory[folder],
       start,
-      pageSize,
-      existingEmailsCount: existingEmails?.length || 0
+      end: start + pageSize - 1,
+      userId: user.id
     });
 
-    // Only return existing emails if we have enough for this page
-    if (existingEmails?.length === pageSize) {
-      const { data: fullEmails, error: fullError } = await supabase
-        .from("emails")
-        .select("*")
-        .eq("user_id", user.id)
-        .range(start, start + pageSize - 1)
-        .order('created_at', { ascending: false });
+    const { data: existingEmails, error: dbError } = await query;
 
-      console.log('Retrieved from database:', {
-        requestedRange: [start, start + pageSize - 1],
-        retrievedCount: fullEmails?.length || 0
-      });
+    if (dbError) throw dbError;
 
-      if (fullError) throw fullError;
+    console.log('Found in database:', {
+      folder,
+      count: existingEmails?.length || 0,
+      requestedCount: pageSize
+    });
 
-      // Check if there are more emails in the provider
-      let hasMoreEmails = false;
-      try {
-        if (provider === 'google') {
-          const checkMore = await fetchGmailMessages(accessToken, 1);
-          hasMoreEmails = checkMore && checkMore.length > 0;
-        } else if (provider === 'azure-ad') {
-          const checkMore = await fetchOutlookMessages(accessToken, 1, page + 1);
-          hasMoreEmails = checkMore && checkMore.messages && checkMore.messages.length > 0;
-        }
-        console.log('Provider check for more emails:', { hasMoreEmails });
-      } catch (error) {
-        console.error('Error checking for more emails:', error);
-        // Don't throw the error, just assume there might be more
-        hasMoreEmails = true;
-      }
-
+    // If we have enough emails in database, return them
+    if (existingEmails && existingEmails.length === pageSize) {
       // Get total count for pagination
-      const { count, error: countError } = await supabase
+      let countQuery = supabase
         .from("emails")
-        .select("email_id", { count: 'exact' })
+        .select("*", { count: 'exact' })
         .eq("user_id", user.id);
 
-      if (countError) throw countError;
+      if (folder !== 'all') {
+        const category = folderToCategory[folder];
+        countQuery = countQuery.eq('category', category);
+      }
+
+      const { count } = await countQuery;
 
       return res.status(200).json({
         success: true,
         message: 'Emails retrieved from database',
-        count: fullEmails.length,
-        messages: fullEmails,
+        count: existingEmails.length,
+        messages: existingEmails,
         pagination: {
           page,
           pageSize,
           totalMessages: count,
-          hasMore: hasMoreEmails || count > (start + pageSize)
+          hasMore: count > (start + pageSize)
         }
       });
     }
@@ -140,7 +151,7 @@ export default async function handler(req, res) {
     
     if (provider === 'google') {
       messages = await fetchGmailMessages(accessToken, pageSize);
-      hasMoreEmails = messages.length === pageSize;  // For Gmail, assume more if we got a full page
+      hasMoreEmails = messages.length === pageSize;
     } else if (provider === 'azure-ad') {
       const response = await fetchOutlookMessages(accessToken, pageSize, page);
       messages = response.messages;
@@ -148,13 +159,6 @@ export default async function handler(req, res) {
     } else {
       return res.status(400).json({ error: 'Invalid provider' });
     }
-
-    console.log('Fetched messages:', {
-      count: messages?.length || 0,
-      pageSize,
-      page,
-      hasMore: hasMoreEmails
-    });
 
     if (!messages || messages.length === 0) {
       return res.status(200).json({
@@ -171,71 +175,71 @@ export default async function handler(req, res) {
       });
     }
 
-    // Store email metadata in Supabase using the user's UUID
-    const storedResults = await Promise.all(
-      messages.map(message => storeEmailMetadata(user.id, message, provider))
-    );
-
-    console.log('Stored in database:', {
-      storedCount: storedResults.length
-    });
-
-    // Extract emailData from stored results for categorization
-    const emailsToProcess = storedResults.map(result => result.emailData);
-
-    console.log('Processing batches:', {
-      totalEmails: emailsToProcess.length,
-      batchCount: Math.ceil(emailsToProcess.length / MAX_BATCH_SIZE),
-      batchSizes: Array(Math.ceil(emailsToProcess.length / MAX_BATCH_SIZE)).fill(MAX_BATCH_SIZE)
-    });
-
     // Process emails in batches for categorization
+    const processedEmails = [];
     const batches = [];
-    for (let i = 0; i < emailsToProcess.length; i += MAX_BATCH_SIZE) {
-      batches.push(emailsToProcess.slice(i, i + MAX_BATCH_SIZE));
+    for (let i = 0; i < messages.length; i += MAX_BATCH_SIZE) {
+      batches.push(messages.slice(i, i + MAX_BATCH_SIZE));
     }
 
-    // Categorize each batch and update database
-    const processedEmails = [];
+    // Process and store each batch
     for (const batch of batches) {
+      // First, get AI categorization for the batch
       const categorizations = await processBatchEmails(batch);
       
-      // Update emails with categorizations
-      await Promise.all(
-        batch.map(async (email, index) => {
+      // Store emails with their categories
+      const storedResults = await Promise.all(
+        batch.map((email, index) => {
           const categorization = categorizations[index];
-          const { error } = await supabase
-            .from("emails")
-            .update({
-              category: categorization.category,
-              priority: categorization.priority,
-              labels: categorization.tags
-            })
-            .match({ email_id: email.email_id, user_id: user.id });
-
-          if (error) throw error;
-          
-          // Add processed email to our list
-          processedEmails.push({
-            ...email,
-            category: categorization.category,
-            priority: categorization.priority,
-            labels: categorization.tags
-          });
+          return storeEmailMetadata(user.id, email, provider, categorization);
         })
       );
+
+      // Add successfully stored emails to processed list
+      processedEmails.push(...storedResults.map(result => result.data).filter(Boolean));
     }
+
+    // After storing new emails, query the database again with folder filter
+    let finalQuery = supabase
+      .from("emails")
+      .select("*")
+      .eq("user_id", user.id)
+      .order('received_at', { ascending: false })
+      .range(start, start + pageSize - 1);
+
+    // Add folder filter if not 'all'
+    if (folder !== 'all') {
+      const category = folderToCategory[folder];
+      finalQuery = finalQuery.eq('category', category);
+    }
+
+    const { data: finalEmails, error: finalError } = await finalQuery;
+
+    if (finalError) throw finalError;
+
+    // Get total count for pagination
+    let countQuery = supabase
+      .from("emails")
+      .select("*", { count: 'exact' })
+      .eq("user_id", user.id);
+
+    if (folder !== 'all') {
+      const category = folderToCategory[folder];
+      countQuery = countQuery.eq('category', category);
+    }
+
+    const { count } = await countQuery;
 
     return res.status(200).json({
       success: true,
       message: 'Emails fetched and categorized successfully',
-      count: emailsToProcess.length,
-      messages: processedEmails,
+      count: finalEmails?.length || 0,
+      messages: finalEmails || [],
       pagination: {
         page,
         pageSize,
-        totalMessages: messages.length,
-        hasMore: hasMoreEmails
+        totalMessages: count,
+        hasMore: count > (start + pageSize)
       }
     });
 

@@ -10,50 +10,94 @@
  */
 
 import { useSession, signIn, signOut } from 'next-auth/react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import Navbar from '../components/Navbar';
 
 export default function Home() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);  // Start with false since no emails fetched yet
-  const [hasFetchedInitial, setHasFetchedInitial] = useState(false);  // Track if initial fetch happened
+  const [hasMore, setHasMore] = useState(false);
+  const [hasFetchedInitial, setHasFetchedInitial] = useState(false);
+  const [loadingText, setLoadingText] = useState('Loading Emails');
+  const [filteredEmails, setFilteredEmails] = useState([]);
+  const [currentFolder, setCurrentFolder] = useState('all');
 
-  const fetchEmails = async (pageNum = 1) => {
+  useEffect(() => {
+    if (session && !hasFetchedInitial) {
+      setInitialLoading(true);
+      fetchEmails(1, 'all');
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (initialLoading) {
+      const interval = setInterval(() => {
+        setLoadingText(prev => prev === 'Loading Emails' ? 'Sorting with AI' : 'Loading Emails');
+      }, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [initialLoading]);
+
+  const handleFolderSelect = (folderId) => {
+    console.log('Folder selected:', folderId);
+    setCurrentFolder(folderId);
+    setPage(1); // Reset pagination when changing folders
+    setEmails([]); // Clear existing emails
+    fetchEmails(1, folderId); // Fetch emails for new folder
+  };
+
+  const fetchEmails = async (pageNum = 1, folder = currentFolder) => {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch(`/api/emails/fetch?page=${pageNum}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch emails');
-      }
+
+      console.log('Fetching emails:', {
+        page: pageNum,
+        folder,
+        currentFolder
+      });
+
+      const response = await fetch(
+        `/api/emails/fetch?page=${pageNum}&folder=${folder}`
+      );
       const data = await response.json();
-      
-      // If it's the first page, replace emails. Otherwise, append them
-      setEmails(prevEmails => pageNum === 1 ? data.messages : [...prevEmails, ...data.messages]);
+
+      if (!response.ok) throw new Error(data.error || 'Failed to fetch emails');
+
+      console.log('Received emails:', {
+        count: data.messages?.length || 0,
+        hasMore: data.pagination.hasMore
+      });
+
+      // If it's page 1, replace emails. Otherwise, append them
+      setEmails(prev => pageNum === 1 ? data.messages : [...prev, ...data.messages]);
       setHasMore(data.pagination.hasMore);
       setPage(pageNum);
-      setHasFetchedInitial(true);  // Mark that we've done the initial fetch
-    } catch (err) {
-      setError(err.message);
-      console.error('Error fetching emails:', err);
+      
+    } catch (error) {
+      console.error('Error fetching emails:', error);
+      setError(error.message);
     } finally {
       setLoading(false);
+      setInitialLoading(false);
+      setHasFetchedInitial(true);
     }
   };
 
-  const loadMore = () => {
+  const handleLoadMore = () => {
     if (!loading && hasMore) {
       fetchEmails(page + 1);
     }
   };
 
-  if (status === 'loading') {
+  if (status === 'loading' || initialLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p className="text-lg">Loading...</p>
+        <p className="text-lg">{loadingText}...</p>
       </div>
     );
   }
@@ -80,79 +124,82 @@ export default function Home() {
     );
   }
 
+  const displayEmails = filteredEmails.length > 0 ? filteredEmails : emails;
+
   return (
-    <div className="min-h-screen bg-gray-100">
-      <main className="container mx-auto px-4 py-8">
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Your Smart Inbox</h1>
-            <p className="text-gray-600 mt-1">{session.user.email}</p>
+    <div className="min-h-screen bg-[#1A1B1E] flex">
+      <Navbar onFolderSelect={handleFolderSelect} />
+      
+      <main className="flex-1 bg-[#1A1B1E] border-l border-[#2D2E32]">
+        {/* Header */}
+        <div className="h-16 border-b border-[#2D2E32] flex items-center justify-between px-6">
+          <div className="flex items-center space-x-4">
+            <h1 className="text-lg font-medium text-white">Smart Inbox</h1>
+            <p className="text-sm text-gray-400">{session.user.email}</p>
           </div>
-          <div className="space-x-4">
-            <button
-              onClick={() => fetchEmails(1)}
-              disabled={loading}
-              className="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 disabled:opacity-50"
-            >
-              {loading ? 'Loading...' : 'Fetch Emails'}
-            </button>
-            <button
-              onClick={() => signOut()}
-              className="bg-gray-500 text-white px-6 py-2 rounded hover:bg-gray-600"
-            >
-              Sign Out
-            </button>
-          </div>
+          <button
+            onClick={() => signOut()}
+            className="text-gray-400 hover:text-white transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+              <path d="M16 13v-2H7V8l-5 4 5 4v-3z M3.9 12c0-4.4 3.6-8 8-8s8 3.6 8 8-3.6 8-8 8-8-3.6-8-8zm8 6c3.3 0 6-2.7 6-6s-2.7-6-6-6-6 2.7-6 6 2.7 6 6 6z"/>
+            </svg>
+          </button>
         </div>
 
-        {error && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-            {error}
-          </div>
-        )}
+        {/* Email List */}
+        <div className="p-6">
+          {error && (
+            <div className="bg-red-900/50 border border-red-500/50 text-red-200 px-4 py-3 rounded mb-4">
+              {error}
+            </div>
+          )}
 
-        {emails.length > 0 ? (
-          <div>
-            <div className="space-y-4">
-              {emails.map((email) => (
-                <div key={email.email_id} className="bg-white p-4 rounded shadow">
-                  <h3 className="font-semibold">{email.subject}</h3>
-                  <p className="text-gray-600">{email.sender}</p>
-                  <p className="text-sm text-gray-500 mt-2">{email.snippet}</p>
-                  {email.category && (
-                    <span className="inline-block bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded mt-2">
-                      {email.category}
-                    </span>
-                  )}
+          {displayEmails.length > 0 ? (
+            <div className="space-y-2">
+              {displayEmails.filter(email => email).map((email) => (
+                <div 
+                  key={email.email_id} 
+                  className="bg-[#25262B] rounded-lg p-4 hover:bg-[#2C2D32] transition-colors cursor-pointer"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center space-x-3">
+                        <h3 className="font-medium text-white truncate">{email.subject}</h3>
+                        {email.category && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-[#6366F1]/20 text-[#6366F1]">
+                            {email.category}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-400 mt-1">{email.sender}</p>
+                      <p className="text-sm text-gray-500 mt-2 line-clamp-2">{email.snippet}</p>
+                    </div>
+                    <div className="ml-4 flex-shrink-0 flex flex-col items-end">
+                      <span className="text-xs text-gray-400">
+                        {new Date(email.received_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
-            
-            {/* Debug info */}
-            <div className="mt-4 text-sm text-gray-500">
-              <p>Has More: {hasMore ? 'true' : 'false'}</p>
-              <p>Current Page: {page}</p>
-              <p>Email Count: {emails.length}</p>
-            </div>
+          ) : hasFetchedInitial ? (
+            <div className="text-center text-gray-400 py-12">No emails found</div>
+          ) : null}
 
-            {/* Show Load More if hasMore is true */}
-            {hasMore && (
-              <div className="mt-6 text-center">
-                <button
-                  onClick={loadMore}
-                  disabled={loading}
-                  className="bg-gray-500 text-white px-6 py-2 rounded hover:bg-gray-600 disabled:opacity-50"
-                >
-                  {loading ? 'Loading...' : 'Load More'}
-                </button>
-              </div>
-            )}
-          </div>
-        ) : hasFetchedInitial ? (
-          <div className="text-center text-gray-600">No emails found</div>
-        ) : (
-          <div className="text-center text-gray-600">Click 'Fetch Emails' to load your messages</div>
-        )}
+          {hasMore && (
+            <div className="mt-6 text-center">
+              <button
+                onClick={handleLoadMore}
+                disabled={loading}
+                className="bg-[#2D2E32] text-gray-300 px-6 py-2 rounded-lg hover:bg-[#35363A] disabled:opacity-50 transition-colors"
+              >
+                {loading ? 'Loading...' : 'Load More'}
+              </button>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
