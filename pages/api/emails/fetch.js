@@ -22,6 +22,7 @@ export default async function handler(req, res) {
       .single();
 
     if (tokenError || !tokens) {
+      console.error('Token error:', tokenError);
       return res.status(401).json({ error: 'No valid tokens found' });
     }
 
@@ -33,79 +34,87 @@ export default async function handler(req, res) {
       .eq('provider', tokens.provider)
       .single();
 
+    if (syncError) {
+      console.error('Sync state error:', syncError);
+    }
+
     // Initialize email provider adapter
     const adapter = tokens.provider === 'google' 
       ? new GmailAdapter(tokens.access_token)
       : new OutlookAdapter(tokens.access_token);
 
-    // Fetch emails using the appropriate page token
-    const { emails, nextPageToken } = await adapter.fetchEmails({
-      pageToken: req.query.pageToken || syncState?.sync_token,
-      maxResults: 50
-    });
+    try {
+      // Fetch emails using the appropriate page token
+      const { emails, nextPageToken } = await adapter.fetchEmails({
+        pageToken: req.query.pageToken || syncState?.sync_token,
+        maxResults: 50
+      });
 
-    // Store new emails in database
-    if (emails.length > 0) {
-      const { error: insertError } = await supabase
-        .from('emails')
-        .upsert(
-          emails.map(email => ({
+      // Store new emails in database
+      if (emails.length > 0) {
+        const { error: insertError } = await supabase
+          .from('emails')
+          .upsert(
+            emails.map(email => ({
+              user_id: session.user.id,
+              ...email,
+              folder: 'inbox', // Default folder, will be updated by AI
+              is_focus: false  // Default focus state, will be updated by AI
+            })),
+            { onConflict: 'provider_email_id' }
+          );
+
+        if (insertError) {
+          console.error('Error storing emails:', insertError);
+          return res.status(500).json({ error: 'Failed to store emails' });
+        }
+      }
+
+      // Update sync state with new token
+      if (nextPageToken) {
+        const { error: updateError } = await supabase
+          .from('sync_state')
+          .upsert({
             user_id: session.user.id,
-            ...email,
-            folder: 'inbox', // Default folder, will be updated by AI
-            is_focus: false  // Default focus state, will be updated by AI
-          })),
-          { onConflict: 'provider_email_id' }
-        );
+            provider: tokens.provider,
+            sync_token: nextPageToken,
+            last_sync_time: new Date().toISOString()
+          }, {
+            onConflict: 'user_id,provider'
+          });
 
-      if (insertError) {
-        console.error('Error storing emails:', insertError);
-        return res.status(500).json({ error: 'Failed to store emails' });
+        if (updateError) {
+          console.error('Error updating sync state:', updateError);
+        }
       }
-    }
 
-    // Update sync state with new token
-    if (nextPageToken) {
-      const { error: updateError } = await supabase
-        .from('sync_state')
-        .upsert({
-          user_id: session.user.id,
-          provider: tokens.provider,
-          sync_token: nextPageToken,
-          last_sync_time: new Date().toISOString()
-        }, {
-          onConflict: 'user_id,provider'
-        });
+      // Queue emails for AI processing
+      if (emails.length > 0) {
+        const { error: queueError } = await supabase
+          .from('email_processing_queue')
+          .insert(
+            emails.map(email => ({
+              email_id: email.id,
+              status: 'pending'
+            }))
+          );
 
-      if (updateError) {
-        console.error('Error updating sync state:', updateError);
+        if (queueError) {
+          console.error('Error queueing emails for processing:', queueError);
+        }
       }
+
+      return res.status(200).json({
+        emails,
+        nextPageToken,
+        count: emails.length
+      });
+    } catch (fetchError) {
+      console.error('Email fetch error:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch emails' });
     }
-
-    // Queue emails for AI processing
-    if (emails.length > 0) {
-      const { error: queueError } = await supabase
-        .from('email_processing_queue')
-        .insert(
-          emails.map(email => ({
-            email_id: email.id,
-            status: 'pending'
-          }))
-        );
-
-      if (queueError) {
-        console.error('Error queueing emails for processing:', queueError);
-      }
-    }
-
-    return res.status(200).json({
-      emails,
-      nextPageToken,
-      count: emails.length
-    });
-
   } catch (error) {
-    console.error('Email fetch error:', error);
-    return res.status(500).json({ error: 'Failed to fetch emails' });
+    console.error('API error:', error);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
