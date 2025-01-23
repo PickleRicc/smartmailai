@@ -25,7 +25,14 @@ export default async function handler(req, res) {
     const { provider } = session;
     const accessToken = session.accessToken;
     const email = session.user.email;
-    
+
+    console.log('Session debug:', {
+      provider,
+      hasAccessToken: !!accessToken,
+      accessTokenStart: accessToken?.substring(0, 10) + '...',
+      email
+    });
+
     // Get pagination parameters from query
     const page = parseInt(req.query.page) || 1;
     const pageSize = parseInt(req.query.pageSize) || MAX_BATCH_SIZE;
@@ -42,6 +49,21 @@ export default async function handler(req, res) {
     // Get or create user in Supabase
     const user = await getOrCreateUser(email, provider);
     console.log('User record:', user);
+
+    /**
+     * Pagination Strategy:
+     * 1. Check Supabase first for emails in the requested range (e.g., 0-24 for page 1, 25-49 for page 2)
+     * 2. If Supabase has enough emails in this range (pageSize), return them
+     * 3. If Supabase doesn't have enough emails:
+     *    - For Gmail: Fetch fresh emails from Gmail API (it automatically gives next batch)
+     *    - For Outlook: Use page parameter to fetch correct batch
+     * 4. Store newly fetched emails in Supabase
+     * 
+     * This approach ensures:
+     * - We don't need to manually track pageTokens
+     * - Each page request gets fresh data if not in Supabase
+     * - Pagination works naturally through range checks
+     */
 
     // Check if we already have emails in Supabase for this user
     const { data: existingEmails, error: existingError } = await supabase
@@ -73,6 +95,23 @@ export default async function handler(req, res) {
 
       if (fullError) throw fullError;
 
+      // Check if there are more emails in the provider
+      let hasMoreEmails = false;
+      try {
+        if (provider === 'google') {
+          const checkMore = await fetchGmailMessages(accessToken, 1);
+          hasMoreEmails = checkMore && checkMore.length > 0;
+        } else if (provider === 'azure-ad') {
+          const checkMore = await fetchOutlookMessages(accessToken, 1, page + 1);
+          hasMoreEmails = checkMore && checkMore.messages && checkMore.messages.length > 0;
+        }
+        console.log('Provider check for more emails:', { hasMoreEmails });
+      } catch (error) {
+        console.error('Error checking for more emails:', error);
+        // Don't throw the error, just assume there might be more
+        hasMoreEmails = true;
+      }
+
       // Get total count for pagination
       const { count, error: countError } = await supabase
         .from("emails")
@@ -90,7 +129,7 @@ export default async function handler(req, res) {
           page,
           pageSize,
           totalMessages: count,
-          hasMore: count > (start + pageSize)
+          hasMore: hasMoreEmails || count > (start + pageSize)
         }
       });
     }
