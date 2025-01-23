@@ -4,6 +4,7 @@ import { FaSearch, FaArchive, FaTrash, FaEnvelope, FaEnvelopeOpen } from 'react-
 import theme from '../styles/theme';
 import { useQueryClient, useInfiniteQuery, useMutation } from 'react-query';
 import { format } from 'date-fns';
+import { signOut } from 'next-auth/react'; // Assuming you have an auth module with a signOut function
 
 const Container = styled.div`
   margin-left: 280px; // Match Navbar width
@@ -179,6 +180,11 @@ const PaginationButton = styled.button`
   }
 `;
 
+const ErrorMessage = styled.div`
+  padding: ${theme.spacing.lg}px;
+  color: ${theme.colors.text.error};
+`;
+
 const EmailContainer = ({ category = 'Work' }) => {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
@@ -186,10 +192,15 @@ const EmailContainer = ({ category = 'Work' }) => {
   const parentRef = useRef();
 
   // Fetch emails with pagination
-  const { data, fetchNextPage, isFetchingNextPage, status } = useInfiniteQuery(
+  const { data, fetchNextPage, isFetchingNextPage, status, error } = useInfiniteQuery(
     ['emails', category],
     async ({ pageParam = null }) => {
       const response = await fetch(`/api/emails/fetch?pageToken=${pageParam || ''}`);
+      if (response.status === 401) {
+        // Token expired or invalid, redirect to login
+        signOut({ redirect: true, callbackUrl: '/login' });
+        throw new Error('Session expired. Please sign in again.');
+      }
       if (!response.ok) throw new Error('Network response was not ok');
       return response.json();
     },
@@ -199,8 +210,27 @@ const EmailContainer = ({ category = 'Work' }) => {
       cacheTime: 0, // Don't cache at all
       refetchOnMount: true, // Always refetch on mount
       refetchOnWindowFocus: true, // Refetch when window regains focus
+      retry: (failureCount, error) => {
+        // Don't retry on 401 errors (auth issues)
+        if (error.message.includes('Session expired')) return false;
+        // Retry other errors up to 3 times
+        return failureCount < 3;
+      },
     }
   );
+
+  // Show error state
+  if (error) {
+    return (
+      <Container>
+        <ErrorMessage>
+          {error.message.includes('Session expired') 
+            ? 'Your session has expired. Please sign in again.'
+            : 'Failed to load emails. Please try again later.'}
+        </ErrorMessage>
+      </Container>
+    );
+  }
 
   // Get current page of emails
   const allEmails = data?.pages.flatMap((page) => page.emails) ?? [];

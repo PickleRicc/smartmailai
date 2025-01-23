@@ -140,10 +140,78 @@ export const authOptions = {
     },
     async jwt({ token, account, profile }) {
       if (account) {
+        // Store both access and refresh tokens
         token.provider = account.provider;
         token.access_token = account.access_token;
+        token.refresh_token = account.refresh_token;
+        token.expires_at = account.expires_at * 1000; // Convert to milliseconds
       }
-      return token;
+
+      // Return previous token if the access token has not expired yet
+      if (Date.now() < token.expires_at) {
+        return token;
+      }
+
+      // Access token has expired, try to refresh it
+      try {
+        let refreshedTokens;
+        
+        if (token.provider === 'google') {
+          const response = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: process.env.GOOGLE_CLIENT_ID,
+              client_secret: process.env.GOOGLE_CLIENT_SECRET,
+              grant_type: 'refresh_token',
+              refresh_token: token.refresh_token,
+            }),
+          });
+          refreshedTokens = await response.json();
+        } else if (token.provider === 'azure-ad') {
+          const response = await fetch(`https://login.microsoftonline.com/common/oauth2/v2.0/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: process.env.MICROSOFT_CLIENT_ID,
+              client_secret: process.env.MICROSOFT_CLIENT_SECRET,
+              grant_type: 'refresh_token',
+              refresh_token: token.refresh_token,
+            }),
+          });
+          refreshedTokens = await response.json();
+        }
+
+        if (!refreshedTokens.access_token) {
+          throw new Error("Failed to refresh access token");
+        }
+
+        // Update the token in Supabase
+        const { error: tokenError } = await supabase
+          .from('tokens')
+          .update({
+            access_token: refreshedTokens.access_token,
+            refresh_token: refreshedTokens.refresh_token || token.refresh_token, // Keep old refresh token if new one not provided
+            expires_at: Date.now() + (refreshedTokens.expires_in * 1000),
+          })
+          .eq('user_id', token.sub)
+          .eq('provider', token.provider);
+
+        if (tokenError) {
+          console.error('Error updating token in database:', tokenError);
+        }
+
+        return {
+          ...token,
+          access_token: refreshedTokens.access_token,
+          refresh_token: refreshedTokens.refresh_token ?? token.refresh_token,
+          expires_at: Date.now() + (refreshedTokens.expires_in * 1000),
+        };
+      } catch (error) {
+        console.error('Error refreshing access token:', error);
+        // The error property will be used client-side to handle the refresh token error
+        return { ...token, error: 'RefreshAccessTokenError' };
+      }
     },
     async session({ session, token }) {
       if (token?.sub) {
