@@ -110,21 +110,17 @@ const AuthBox = () => {
     try {
       setIsLoading(true);
       console.log(`Starting authentication with ${provider}...`);
-      const result = await signIn(provider, { 
-        callbackUrl: '/',
-        redirect: false
-      });
-      console.log('Authentication result:', result);
       
-      if (result?.error) {
-        console.error('Authentication error:', result.error);
-      } else {
-        console.log('Authentication successful!');
-        window.location.href = result.url;
-      }
+      // Call signIn with redirect: true to handle the flow properly
+      await signIn(provider, { 
+        callbackUrl: '/',
+        redirect: true
+      });
+      
+      // Note: The code below won't execute because redirect: true will handle the navigation
+      console.log('Authentication initiated');
     } catch (error) {
       console.error('Authentication error:', error);
-    } finally {
       setIsLoading(false);
     }
   };

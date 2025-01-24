@@ -4,7 +4,6 @@ import { FaSearch, FaArchive, FaTrash, FaEnvelope, FaEnvelopeOpen } from 'react-
 import theme from '../styles/theme';
 import { useQueryClient, useInfiniteQuery, useMutation } from 'react-query';
 import { format } from 'date-fns';
-import { signOut } from 'next-auth/react'; // Assuming you have an auth module with a signOut function
 
 const Container = styled.div`
   margin-left: 280px; // Match Navbar width
@@ -180,11 +179,6 @@ const PaginationButton = styled.button`
   }
 `;
 
-const ErrorMessage = styled.div`
-  padding: ${theme.spacing.lg}px;
-  color: ${theme.colors.text.error};
-`;
-
 const EmailContainer = ({ category = 'Work' }) => {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
@@ -192,17 +186,10 @@ const EmailContainer = ({ category = 'Work' }) => {
   const parentRef = useRef();
 
   // Fetch emails with pagination
-  const { data, fetchNextPage, isFetchingNextPage, status, error } = useInfiniteQuery(
+  const { data, fetchNextPage, isFetchingNextPage, status } = useInfiniteQuery(
     ['emails', category],
     async ({ pageParam = null }) => {
       const response = await fetch(`/api/emails/fetch?pageToken=${pageParam || ''}`);
-      if (response.status === 401) {
-        console.log('Received 401, waiting before sign-out...');
-        // Add a small delay to prevent rapid sign-out loops
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        signOut({ redirect: true, callbackUrl: '/login' });
-        throw new Error('Session expired. Please sign in again.');
-      }
       if (!response.ok) {
         console.error('API Error:', response.status, response.statusText);
         throw new Error('Network response was not ok');
@@ -211,36 +198,13 @@ const EmailContainer = ({ category = 'Work' }) => {
     },
     {
       getNextPageParam: (lastPage) => lastPage.nextPageToken,
-      staleTime: 30000, // Consider data fresh for 30 seconds
-      cacheTime: 5 * 60 * 1000, // Cache for 5 minutes
-      refetchOnMount: 'always',
-      refetchOnWindowFocus: false, // Disable auto-refresh on window focus
-      retry: (failureCount, error) => {
-        if (error.message.includes('Session expired')) {
-          console.log('Session expired, no retry');
-          return false;
-        }
-        console.log(`Retry attempt ${failureCount}`);
-        return failureCount < 2;
-      },
-      onError: (error) => {
-        console.error('Query error:', error);
-      }
+      staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+      cacheTime: 30 * 60 * 1000, // Cache for 30 minutes
+      refetchOnMount: true,
+      refetchOnWindowFocus: false,
+      retry: 3
     }
   );
-
-  // Show error state
-  if (error) {
-    return (
-      <Container>
-        <ErrorMessage>
-          {error.message.includes('Session expired') 
-            ? 'Your session has expired. Please sign in again.'
-            : 'Failed to load emails. Please try again later.'}
-        </ErrorMessage>
-      </Container>
-    );
-  }
 
   // Get current page of emails
   const allEmails = data?.pages.flatMap((page) => page.emails) ?? [];
