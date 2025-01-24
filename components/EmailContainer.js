@@ -197,25 +197,35 @@ const EmailContainer = ({ category = 'Work' }) => {
     async ({ pageParam = null }) => {
       const response = await fetch(`/api/emails/fetch?pageToken=${pageParam || ''}`);
       if (response.status === 401) {
-        // Token expired or invalid, redirect to login
+        console.log('Received 401, waiting before sign-out...');
+        // Add a small delay to prevent rapid sign-out loops
+        await new Promise(resolve => setTimeout(resolve, 2000));
         signOut({ redirect: true, callbackUrl: '/login' });
         throw new Error('Session expired. Please sign in again.');
       }
-      if (!response.ok) throw new Error('Network response was not ok');
+      if (!response.ok) {
+        console.error('API Error:', response.status, response.statusText);
+        throw new Error('Network response was not ok');
+      }
       return response.json();
     },
     {
       getNextPageParam: (lastPage) => lastPage.nextPageToken,
-      staleTime: 0, // Consider data stale immediately
-      cacheTime: 0, // Don't cache at all
-      refetchOnMount: true, // Always refetch on mount
-      refetchOnWindowFocus: true, // Refetch when window regains focus
+      staleTime: 30000, // Consider data fresh for 30 seconds
+      cacheTime: 5 * 60 * 1000, // Cache for 5 minutes
+      refetchOnMount: 'always',
+      refetchOnWindowFocus: false, // Disable auto-refresh on window focus
       retry: (failureCount, error) => {
-        // Don't retry on 401 errors (auth issues)
-        if (error.message.includes('Session expired')) return false;
-        // Retry other errors up to 3 times
-        return failureCount < 3;
+        if (error.message.includes('Session expired')) {
+          console.log('Session expired, no retry');
+          return false;
+        }
+        console.log(`Retry attempt ${failureCount}`);
+        return failureCount < 2;
       },
+      onError: (error) => {
+        console.error('Query error:', error);
+      }
     }
   );
 
